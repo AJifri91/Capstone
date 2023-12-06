@@ -1,0 +1,231 @@
+---
+title: "Capstone project2"
+author: "Ahmed Al-Jifri"
+date: "2023-12-06"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mice)
+library(corrplot)
+library(tidyverse); library(dslabs); library(caret);library(broom)
+
+path <- file.path(getwd(), "E Commerce Dataset.xlsx") 
+commerce_data <- readxl::read_xlsx(path, sheet = 2)
+commerce_data$CustomerID <- 1:nrow(commerce_data)
+```
+## Overview
+
+For the purpose of this project, a public dataset has been retrieved from Kegel website that outlines customers churn and their corresponding information for a highly reputable E-commerce online based company (name left out for privacy concerns). The dataset is already in tidy format retrieved as an excel sheet which makes it easy to import into R and start preparing. The dataset has a label (Churn), 18 predictors and 5630 unique observations. To get an idea about the dataset, below is basic summary and structure of the dataset:
+
+```{r}
+summary(commerce_data)
+str(commerce_data)
+```
+Nevertheless, the purpose of this project is to build  machine learning models that can accurately predict customers’ churn in an e-commerce platform. the key steps performed were data preprocessing, data visualization, implementation and analysis of the machine learning algorithms used.
+
+## Methodology
+
+First step lets preprocess the data and clean it for proper machine learnignimplementation.
+lets start by looking at missing values, it is evident from the summaries above that we do have some missing values. A visual representation can give us a good idea as shown below:
+
+```{r echo=FALSE}
+##visual representation of nas
+missing_matrix <- is.na(commerce_data[,2:20])
+missing_matrix <- as.data.frame(missing_matrix)
+missing_matrix <- cbind(commerce_data[,1], missing_matrix)
+
+# Convert the logical matrix to a long-format data frame
+missing_data <- pivot_longer(missing_matrix, cols = 2:20, names_to = "Variable",
+                             values_to = "Missing", values_drop_na = FALSE)
+ggplot(data = missing_data, aes(x = Variable, y = CustomerID, fill = Missing)) +
+  geom_tile() +
+  scale_fill_manual(values = c("white", "red"), na.value = "white") +
+  labs(x = "Variables", y = "Observations", title = "Missing Value Heatmap")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+We can see there are 7 variables with missing data in them.There are many ways to handle missing data, in the report we opt for using a function called mice , which provides a solution for handling Nas by generating multiple imputations for multivariate missing values. This approach utilizes the Fully Conditional Specification technique, imputing incomplete variables with separate models. The function is capable of imputing various data types like continuous, binary, unordered categorical, and ordered categorical data. The default imputation methods in the function encompass various techniques. The package employs PMM (predictive mean matching) for numeric data, LOGREG (logistic regression) for binary data and factors with two levels, POLYREG (polytomous regression) for unordered categorical data with more than two levels, and POLR (proportional odds) for ordered categorical data with more than two levels. After using the function mice() we can check for na using the following code:
+
+```{r include=FALSE}
+set.seed(2)
+imp <- mice(commerce_data)
+commerce_data_complt <- complete(imp)
+```
+
+```{r}
+sum(is.na(commerce_data_complt))
+```
+
+Now that we've handled the missing variables, we can look into the dataset. Predictors have been manually categorized as a preliminary step into 3 different data types: 8 Numerical, 9 Categorical and 1 Binary variables, and shall be modified accordingly during cleaning and ML implementation. Histograms/bar plots of Numerical and Categorical variables shown below:
+
+```{r echo=FALSE}
+##visualize numeric variables
+pred2 <- commerce_data_complt %>% select(c(3,6,14, 17,16,18,19,20)) %>% names()
+suppressWarnings(plots_num <- lapply(pred2, function(x){
+  commerce_data_complt %>% ggplot(aes_string(x))+
+    geom_histogram(bins = 30)
+}))
+suppressWarnings(gridExtra::grid.arrange(grobs = plots_num, ncol=4))
+
+##visualize categorical variables
+pred3 <- commerce_data_complt %>% select(c(4,5,7,8,9,10,11,12,13)) %>% names()
+suppressWarnings(plots_cat <- lapply(pred3, function(x){
+  commerce_data_complt %>% ggplot(aes_string(x))+
+    geom_bar()+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+}))
+suppressWarnings(gridExtra::grid.arrange(grobs = plots_cat, ncol=5))
+```
+
+Looking briefly at Figure.1 and Figure.2 it is evident that there are outliers, however we're gonna leave them be for now and test their impact later on in ml implementation. On the other hand, categorical variables have some inconsistencies in their levels. We can see in their corresponding barplots that some variables have redundant levels which will be rectified. Moreover, boxplots are generated for numerical variables to get an idea about outliers and their corresponding statistics as shown in below:
+
+```{r echo=FALSE}
+pred4 <- commerce_data_complt %>% select(c(3,6,14,17,16,18,19,20)) %>% names()
+
+plots_box <- lapply(pred4, function(x){
+  commerce_data_complt %>% 
+    ggplot(aes(!!rlang::sym(x))) +
+    geom_boxplot() +
+    coord_flip() 
+    })
+
+gridExtra::grid.arrange(grobs = plots_box, ncol = 4)
+```
+Next, we need to split the dataset into training and testing parts with training set accounting for 80% of the original dataset and the rest 20% for the testing. to do this we use the function createDataPartition() as shown below:
+
+```{r}
+set.seed(1991)
+test <- createDataPartition(commerce_data_complt$Churn, times = 1, p = .2, list = FALSE)
+train_commerce <- commerce_data_complt[-test,]
+test_commerce <- commerce_data_complt[test,]
+```
+
+Furthermore, we can do correlation analysis between the numerical variables to check for highly correlated variables.
+```{r echo=FALSE}
+num_var <- commerce_data_complt %>% select(where(is.numeric ), -c(1,2))
+corrplot(cor(num_var, method = "spearman"), method = "color")
+
+```
+We can see relatively high correlation between some of the variables. This shall be used later in tuning in the model.
+
+Now we are ready for ml implementation. The choice of ml methods to use is set to be logistic regression as a base model and K-Nearest Neighbors.
+
+## Results
+
+First of all, lets try logistic regression,after some experimentation, the best results were achieved when removing the variables OrderCount, DaysSinceLastOrder and CashbackAmount given high correlation between them and other variables and transform numerical variables with logarithmic scale adding a 0.5 buffer to avoid 0 entries. After that, we need to transform all categorical and binary variables to factors and handle redundancies of some of their levels.
+```{r include=FALSE}
+
+train_commerce_logreg <- train_commerce %>% select(-c(1,2,18,19,20)) %>% 
+  mutate(across(c(CityTier, SatisfactionScore, MaritalStatus, HourSpendOnApp,    NumberOfDeviceRegistered, Complain), factor)
+         ,across(where(is.numeric),function(x) ifelse(x==0, log(.5),log(x))), 
+         Gender = factor(ifelse(Gender == "Female", 0, 1)),
+         PreferredLoginDevice = factor(ifelse(PreferredLoginDevice == "Computer", 0, 1)),
+         PreferredPaymentMode = factor(case_when(
+           PreferredPaymentMode == "CC" ~ "Credit Card",
+           PreferredPaymentMode == "COD" ~ "Cash on Delivery",
+           TRUE ~ PreferredPaymentMode)),
+         PreferedOrderCat = factor(ifelse(PreferedOrderCat == "Mobile", "Mobile Phone",
+                                   PreferedOrderCat)))
+
+Churn <- train_commerce %>% .$Churn 
+train_commerce_logreg <- cbind(train_commerce_logreg, Churn)
+
+set.seed(1)
+model_log <- glm(as.factor(Churn)~., data = train_commerce_logreg, family = "binomial")
+
+
+test_commerce_logreg <- test_commerce %>% select(-c(1,2,18,19,20)) %>% 
+  mutate(across(c(CityTier, SatisfactionScore, MaritalStatus, HourSpendOnApp, NumberOfDeviceRegistered,
+                  Complain), factor),across(where(is.numeric),function(x) ifelse(x==0, log(.5),log(x))), 
+         Gender = factor(ifelse(Gender == "Female", 0, 1)),
+         PreferredLoginDevice = factor(ifelse(PreferredLoginDevice == "Computer", 0, 1)),
+         PreferredPaymentMode = factor(case_when(
+           PreferredPaymentMode == "CC" ~ "Credit Card",
+           PreferredPaymentMode == "COD" ~ "Cash on Delivery",
+           TRUE ~ PreferredPaymentMode)),
+         PreferedOrderCat = factor(ifelse(PreferedOrderCat == "Mobile", "Mobile Phone",
+                                          PreferedOrderCat)))
+
+Churn2 <- test_commerce %>% .$Churn
+test_commerce_logreg <- cbind(test_commerce_logreg, Churn2)
+
+
+```
+the results of this model can be shown below using a confusion matrix:
+```{r}
+##fit model
+fit_log <- predict(model_log,newdata = test_commerce_logreg, type = "response")
+
+y_h <- ifelse(fit_log > 0.5, 1, 0) 
+confusionMatrix(as.factor(y_h), as.factor(test_commerce_logreg$Churn2))
+```
+The model resulted in 0.9636 sensitivity and 0.6198 specificity, however, since we are interested in churns which is measured by the specificity it's quite low.
+
+secondly, lets try KNN, for knn the best results were when scaling numerical variables, leaving categorical ordinal variables as is, however on-hot-encode categorical variables.
+
+```{r include=FALSE}
+train_commerce_sc <- train_commerce %>% select(-c(1,2)) %>% 
+  mutate(across(c(4,12,15,18), scale), 
+         Gender = ifelse(Gender == "Female", 0, 1),
+         PreferredLoginDevice = ifelse(PreferredLoginDevice == "Computer", 0, 1),
+         PreferredPaymentMode = case_when(
+           PreferredPaymentMode == "CC" ~ "Credit Card",
+           PreferredPaymentMode == "COD" ~ "Cash on Delivery",
+           TRUE ~ PreferredPaymentMode),
+         PreferedOrderCat = ifelse(PreferedOrderCat == "Mobile", "Mobile Phone",
+                                          PreferedOrderCat))
+
+
+encoded_cat1 <- model.matrix(~PreferredPaymentMode-1, train_commerce_sc)
+encoded_cat2 <- model.matrix(~PreferedOrderCat -1, train_commerce_sc)
+encoded_cat3 <- model.matrix(~MaritalStatus -1, train_commerce_sc)
+encoded_cat <- cbind(encoded_cat1, encoded_cat2, encoded_cat3)
+
+
+rm(encoded_cat1, encoded_cat2, encoded_cat3)
+
+train_commerce_sc <- train_commerce_sc %>% select(-c(PreferredPaymentMode, PreferedOrderCat, MaritalStatus))
+train_commerce_sc <- cbind(train_commerce_sc, encoded_cat)
+train_commerce_sc <- train_commerce_sc %>% mutate(Churn = train_commerce$Churn)
+
+set.seed(2)
+model_knn <- train(as.factor(Churn) ~., data = train_commerce_sc, method = "knn", tuneGrid = data.frame(k =seq(1,5,1)))
+
+
+##test set preprocessing scale
+
+test_commerce_sc <- test_commerce %>% select(-c(1,2)) %>% 
+  mutate(across(c(4,12,15,18), scale), 
+         Gender = ifelse(Gender == "Female", 0, 1),
+         PreferredLoginDevice = ifelse(PreferredLoginDevice == "Computer", 0, 1),
+         PreferredPaymentMode = case_when(
+           PreferredPaymentMode == "CC" ~ "Credit Card",
+           PreferredPaymentMode == "COD" ~ "Cash on Delivery",
+           TRUE ~ PreferredPaymentMode),
+         PreferedOrderCat = ifelse(PreferedOrderCat == "Mobile", "Mobile Phone",
+                                   PreferedOrderCat))
+
+
+encoded_cat1 <- model.matrix(~PreferredPaymentMode-1, test_commerce_sc)
+encoded_cat2 <- model.matrix(~PreferedOrderCat -1, test_commerce_sc)
+encoded_cat3 <- model.matrix(~MaritalStatus -1, test_commerce_sc)
+encoded_cat <- cbind(encoded_cat1, encoded_cat2, encoded_cat3)
+
+
+rm(encoded_cat1, encoded_cat2, encoded_cat3)
+
+test_commerce_sc <- test_commerce_sc %>% select(-c(PreferredPaymentMode, PreferedOrderCat, MaritalStatus))
+test_commerce_sc <- cbind(test_commerce_sc, encoded_cat)
+test_commerce_sc <- test_commerce_sc %>% mutate(Churn = test_commerce$Churn)
+```
+Below we can check the accuracies of our knn model through a confusion matrix:
+```{r}
+fit_knn <- predict(model_knn, newdata = test_commerce_sc)
+confusionMatrix(fit_knn, as.factor(test_commerce_sc$Churn))
+```
+We can see that knn outperformed logreg by far, having sensitivity of 0.9861 and specificity of 0.9635 which is very good!
+
+## Conclusion 
+
+In this project we have worked with a dataset provided publicly from Kaggle website, the dataset holds data with mixed datatypes about customers in an online e commerce platform labelled with churn. The purpose of this project was to create machine learning algorithms to classify our customers based on churning or not. Two models have been chosen for this purpose, logistic regression and knn. Logistic regression poorly classified churns due to the fact that the assumption of linearity between variables and the log odds. On the other hand, knn performed very well, giving highly accurate results. An interesting look would be trying out neural network in this context, however, it is out of the scope of this course.
